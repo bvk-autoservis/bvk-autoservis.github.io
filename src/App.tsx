@@ -1,10 +1,20 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import {
   BRANDS, ADDRESS,
   formatDateTime, formatDateLabel, parsePrice,
   BrandType, Service, Booking, BookingStatus, AppMode, ScheduleSettings, Client,
 } from './types';
 import { Car } from 'lucide-react';
+import {
+  supabase, DEFAULT_SCHEDULE,
+  fetchServices, syncServices,
+  fetchScheduleSettings, updateScheduleSettings,
+  fetchClients, saveClient as saveClientToDb, deleteClient as deleteClientFromDb,
+  fetchBookings, createBooking, createPublicBooking, updateBookingRecord, deleteBookingRecord,
+  fetchBusySlots,
+} from './lib/supabase';
+import AuthModal from './components/AuthModal';
 
 
 // ===== Date helpers (timezone-safe) =====
@@ -20,78 +30,6 @@ function parseLocalDate(dateStr: string): Date {
   return new Date(y, m - 1, d);
 }
 
-
-// ===== localStorage helpers =====
-const BOOKINGS_KEY = 'bumpix_bookings';
-
-function loadBookings(): Booking[] {
-  try {
-    return JSON.parse(localStorage.getItem(BOOKINGS_KEY) || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function saveBookings(bookings: Booking[]): void {
-  localStorage.setItem(BOOKINGS_KEY, JSON.stringify(bookings, null, 2));
-}
-
-// ===== localStorage helpers for services =====
-const SERVICES_KEY = 'bumpix_services';
-
-const INITIAL_SERVICES: Service[] = [
-  // BVK-AUTOSERVIS — слесарный ремонт
-  { id: 'oil', name: 'Замена масла и фильтров', price: '1200 ₽', duration: 60, brand: 'bvk' },
-  { id: 'brake', name: 'Замена передних тормозных колодок', price: '1200 ₽', duration: 60, brand: 'bvk' },
-  { id: 'brake-disc', name: 'Замена тормозных дисков', price: 'от 2500 ₽', duration: 120, brand: 'bvk' },
-  { id: 'susp', name: 'Диагностика подвески', price: '1000 ₽', duration: 60, brand: 'bvk' },
-  { id: 'grm', name: 'Замена ГРМ', price: 'от 6500 ₽', duration: 240, brand: 'bvk' },
-  { id: 'steering', name: 'Ремонт рулевой рейки', price: 'от 4000 ₽', duration: 180, brand: 'bvk' },
-  { id: 'diag', name: 'Компьютерная диагностика двигателя', price: '1000 ₽', duration: 60, brand: 'bvk' },
-  { id: 'spark', name: 'Замена свечей зажигания', price: '1200 ₽', duration: 60, brand: 'bvk' },
-  { id: 'clutch', name: 'Замена сцепления', price: 'от 6000 ₽', duration: 240, brand: 'bvk' },
-  { id: 'alignment', name: 'Регулировка сход-развала', price: '2000 ₽', duration: 60, brand: 'bvk' },
-  { id: 'radiator', name: 'Промывка радиаторов', price: '2500 ₽', duration: 120, brand: 'bvk' },
-  { id: 'antifreeze', name: 'Замена антифриза', price: '1500 ₽', duration: 60, brand: 'bvk' },
-  { id: 'ac-refill', name: 'Заправка автокондиционера', price: '2500 ₽', duration: 90, brand: 'bvk' },
-  // МирГбоСПб — газобаллонное оборудование
-  { id: 'gbo-diag', name: 'Компьютерная настройка ГБО', price: '1000 ₽', duration: 60, brand: 'gbo' },
-  { id: 'gbo-to', name: 'Замена газовых фильтров (ТО ГБО)', price: '1800 ₽', duration: 60, brand: 'gbo' },
-  { id: 'gbo-install', name: 'Установка ГБО 4 поколения', price: 'от 38 000 ₽', duration: 360, brand: 'gbo' },
-  { id: 'gbo-injectors', name: 'Диагностика и чистка газовых форсунок', price: 'от 2500 ₽', duration: 120, brand: 'gbo' },
-  { id: 'gbo-repair', name: 'Замена редуктора ГБО', price: 'от 3500 ₽', duration: 120, brand: 'gbo' },
-  { id: 'gbo-inspection', name: 'Опрессовка и освидетельствование баллона', price: '2500 ₽', duration: 60, brand: 'gbo' },
-  { id: 'gbo-valves', name: 'Регулировка клапанов под ГБО', price: 'от 3000 ₽', duration: 120, brand: 'gbo' },
-];
-
-function loadServices(): Service[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SERVICES_KEY) || '[]');
-    if (parsed.length === 0) return INITIAL_SERVICES;
-    return parsed;
-  } catch {
-    return INITIAL_SERVICES;
-  }
-}
-
-function saveServices(services: Service[]): void {
-  localStorage.setItem(SERVICES_KEY, JSON.stringify(services, null, 2));
-}
-
-// ===== localStorage helpers for clients =====
-const CLIENTS_KEY = 'bumpix_clients';
-
-function loadClients(): Client[] {
-  try {
-    return JSON.parse(localStorage.getItem(CLIENTS_KEY) || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function saveClients(clients: Client[]): void {
-  localStorage.setItem(CLIENTS_KEY, JSON.stringify(clients, null, 2));
-}
 
 // ===== localStorage helpers for client PWA profile & own bookings =====
 const CLIENT_PROFILE_KEY = 'bvk_client_profile';
@@ -135,28 +73,7 @@ function saveOwnBookings(bookings: Booking[]): void {
   localStorage.setItem(CLIENT_OWN_BOOKINGS_KEY, JSON.stringify(bookings, null, 2));
 }
 
-// ===== Schedule settings + working hours =====
-const SCHEDULE_KEY = 'bumpix_schedule';
-const DEFAULT_SCHEDULE: ScheduleSettings = {
-  startTime: '09:00',
-  endTime: '21:00',
-  daysOff: [0, 6],
-};
-
-function loadScheduleSettings(): ScheduleSettings {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(SCHEDULE_KEY) || 'null');
-    if (!parsed || !parsed.startTime || !parsed.endTime) return DEFAULT_SCHEDULE;
-    return parsed;
-  } catch {
-    return DEFAULT_SCHEDULE;
-  }
-}
-
-function saveScheduleSettings(settings: ScheduleSettings): void {
-  localStorage.setItem(SCHEDULE_KEY, JSON.stringify(settings, null, 2));
-}
-
+// ===== Working hours =====
 function generateWorkingHours(start: string, end: string): string[] {
   const [startH, startM] = start.split(':').map(Number);
   const [endH, endM] = end.split(':').map(Number);
@@ -169,45 +86,6 @@ function generateWorkingHours(start: string, end: string): string[] {
     hours.push(`${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`);
   }
   return hours;
-}
-
-// ===== Demo seed data =====
-function seedIfNeeded(): void {
-  const existing = loadBookings();
-  if (existing.length === 0) {
-    const todayStr = toLocalDateString(new Date());
-    const demo: Booking[] = [
-      {
-        id: 'demo-1', brand: 'bvk', services: ['oil'],
-        serviceName: 'Замена масла', totalPrice: 1200,
-        carMake: 'Kia', carModel: 'Rio', date: todayStr, time: '10:00',
-        name: 'Алексей М.', phone: '+79112223344', comment: '',
-        status: 'in_progress', createdAt: new Date().toISOString(),
-      },
-      {
-        id: 'demo-2', brand: 'bvk', services: ['brake', 'susp'],
-        serviceName: 'Замена тормозных колодок; Ремонт подвески', totalPrice: 2500,
-        carMake: 'BMW', carModel: 'X5', date: todayStr, time: '13:00',
-        name: 'Дмитрий К.', phone: '+79051234567', comment: 'Сильно скрежетит',
-        status: 'in_progress', createdAt: new Date().toISOString(),
-      },
-      {
-        id: 'demo-3', brand: 'gbo', services: ['gbo-diag'],
-        serviceName: 'Компьютерная настройка ГБО', totalPrice: 1000,
-        carMake: 'Honda', carModel: 'Civic', date: todayStr, time: '14:00',
-        name: 'Никита В.', phone: '+79115556677', comment: '',
-        status: 'pending', createdAt: new Date().toISOString(),
-      },
-      {
-        id: 'demo-4', brand: 'gbo', services: ['gbo-repair'],
-        serviceName: 'Ремонт редуктора', totalPrice: 3500,
-        carMake: 'Volkswagen', carModel: 'Golf', date: todayStr, time: '17:00',
-        name: 'Роман С.', phone: '+79219990011', comment: 'Тормозит на газу',
-        status: 'ready', createdAt: new Date().toISOString(),
-      },
-    ];
-    saveBookings(demo);
-  }
 }
 
 // ===== Utility: format duration =====
@@ -328,10 +206,8 @@ function layoutDayItems(items: Booking[], services: Service[]): Map<string, { co
 const Header: React.FC<{
   activeBrand: BrandType;
   onBrandChange: (b: BrandType) => void;
-  mode: AppMode;
-  onModeChange: (m: AppMode) => void;
-  todayBookingsCount: number;
-}> = ({ activeBrand, onBrandChange, mode, onModeChange, todayBookingsCount }) => {
+  onLogoTap: () => void;
+}> = ({ activeBrand, onBrandChange, onLogoTap }) => {
   const brand = BRANDS[activeBrand];
 
   return (
@@ -369,7 +245,12 @@ const Header: React.FC<{
 
           {/* Contact card */}
           <div className="flex items-center gap-3">
-            <img src={brand.logo} alt={brand.name} className="w-12 h-12 object-contain flex-shrink-0" />
+            <img
+              src={brand.logo}
+              alt={brand.name}
+              onClick={onLogoTap}
+              className="w-12 h-12 object-contain flex-shrink-0 cursor-pointer select-none"
+            />
             <div className="flex-1 min-w-0">
               <h2 className="font-bold text-gray-900 text-md truncate">{brand.name}</h2>
               <p className="text-sm text-gray-500 truncate">{brand.subtitle}</p>
@@ -377,32 +258,6 @@ const Header: React.FC<{
             </div>
           </div>
 
-          {/* Mode toggle - Bumpix style */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => onModeChange('client')}
-              className={`flex items-center justify-center gap-1.5 py-2.5 rounded border text-sm font-medium transition ${mode === 'client'
-                ? 'bg-purple-700 text-white border-purple-700'
-                : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200'
-                }`}
-            >
-              📱 Запись клиента
-            </button>
-            <button
-              onClick={() => onModeChange('journal')}
-              className={`flex items-center justify-center gap-1.5 py-2.5 rounded border text-sm font-medium transition relative ${mode === 'journal'
-                ? 'bg-gray-900 text-white border-gray-900'
-                : 'bg-gray-100 text-gray-700 border-gray-300 hover:bg-gray-200'
-                }`}
-            >
-              📅 Журнал мастера
-              {todayBookingsCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {todayBookingsCount}
-                </span>
-              )}
-            </button>
-          </div>
         </div>
       </header>
     </>
@@ -1747,6 +1602,7 @@ const ServiceModal: React.FC<ServiceModalProps> = ({ isOpen, onClose, onSave, on
   const [name, setName] = useState('');
   const [durationStr, setDurationStr] = useState('');
   const [priceInput, setPriceInput] = useState('');
+  const [priceFrom, setPriceFrom] = useState(false);
   const [brand, setBrand] = useState<BrandType>('bvk');
 
   useEffect(() => {
@@ -1754,11 +1610,14 @@ const ServiceModal: React.FC<ServiceModalProps> = ({ isOpen, onClose, onSave, on
       setName(service.name);
       setDurationStr(String(service.duration));
       setPriceInput(parsePrice(service.price).toString());
+      // «от 1500 ₽» → чекбокс включён, в поле только цифры
+      setPriceFrom(/^\s*от(\s|$)/i.test(service.price || ''));
       setBrand(service.brand);
     } else {
       setName('');
       setDurationStr('60');
       setPriceInput('');
+      setPriceFrom(false);
       setBrand('bvk');
     }
   }, [service]);
@@ -1772,7 +1631,7 @@ const ServiceModal: React.FC<ServiceModalProps> = ({ isOpen, onClose, onSave, on
     const newService: Service = {
       id: service ? service.id : Date.now().toString(),
       name,
-      price: `${priceStr} ₽`,
+      price: priceFrom ? `от ${priceStr} ₽` : `${priceStr} ₽`,
       duration,
       brand,
     };
@@ -1821,6 +1680,15 @@ const ServiceModal: React.FC<ServiceModalProps> = ({ isOpen, onClose, onSave, on
               className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
               placeholder="Введите цену"
             />
+            <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={priceFrom}
+                onChange={e => setPriceFrom(e.target.checked)}
+                className="w-4 h-4 accent-purple-700"
+              />
+              <span className="text-xs text-gray-700">Цена «от» (например: от 1500 ₽)</span>
+            </label>
           </div>
           <div>
             <label className="block text-xs text-gray-600 mb-1">Бренд</label>
@@ -2186,10 +2054,11 @@ const JournalMode: React.FC<{
   clients: Client[];
   onSaveClient: (c: Client) => void;
   onDeleteClient: (id: string) => void;
+  onSignOut: () => void;
 }> = ({
   bookings, onAddManual, onCellAction, onDetailsOpen, selectedJournalDate, onJournalDateChange,
   filterBrand, onFilterChange, onUpdateBooking, onDeleteBooking, services, onUpdateServices,
-  scheduleSettings, onUpdateSchedule, clients, onSaveClient, onDeleteClient,
+  scheduleSettings, onUpdateSchedule, clients, onSaveClient, onDeleteClient, onSignOut,
 }) => {
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
     const [activeAdminScreen, setActiveAdminScreen] = useState<'calendar' | 'clients' | 'services' | 'settings'>('calendar');
@@ -2199,7 +2068,7 @@ const JournalMode: React.FC<{
     const [isQrLinkCopied, setIsQrLinkCopied] = useState(false);
 
     const handleCopyQrLink = async () => {
-      const url = 'https://evgeniy261128.github.io/bvk-gbo-app/';
+      const url = 'https://bvk-autoservis.github.io/';
       try {
         await navigator.clipboard.writeText(url);
       } catch {
@@ -2285,6 +2154,9 @@ const JournalMode: React.FC<{
     // Контейнер сетки: только свободный ручной скролл
     const gridContainerRef = useRef<HTMLDivElement>(null);
 
+    // Последняя позиция скролла сетки — восстанавливается при возврате в журнал
+    const savedScrollRef = useRef<{ left: number; top: number } | null>(null);
+
     // Строго однократное центрирование сегодняшнего дня при входе в журнал
     const todayColumnRef = useRef<HTMLDivElement>(null);
 
@@ -2330,6 +2202,8 @@ const JournalMode: React.FC<{
     const handleGridScroll = () => {
       const container = gridContainerRef.current;
       if (!container) return;
+      // Запоминаем позицию, чтобы вернуть её при повторном входе в журнал
+      savedScrollRef.current = { left: container.scrollLeft, top: container.scrollTop };
       // Центральная видимая колонка: вычитаем ширину колонки часов
       const centerPx = container.scrollLeft + container.clientWidth / 2 - TIME_COLUMN_WIDTH;
       let idx = Math.floor(centerPx / COLUMN_WIDTH);
@@ -2338,6 +2212,38 @@ const JournalMode: React.FC<{
       const key = weekDays[idx]?.monthKey || '';
       setToolbarMonthKey(prev => (prev === key ? prev : key));
     };
+
+    // При возврате в журнал восстанавливаем сохранённую позицию скролла
+    // (или прокручиваем к выбранной дате при первом показе), без скачка в начало.
+    useEffect(() => {
+      // Экран журнала в этом компоненте называется 'calendar'
+      if (activeAdminScreen !== 'calendar') return;
+      const raf = requestAnimationFrame(() => {
+        const container = gridContainerRef.current;
+        if (!container) return;
+        const saved = savedScrollRef.current;
+        if (saved) {
+          container.scrollLeft = saved.left;
+          container.scrollTop = saved.top;
+        } else {
+          const idx = weekDays.findIndex(wd => wd.date === selectedJournalDate);
+          // Если дата ещё не выбрана (первый рендер до инициализации),
+          // не сохраняем нулевую позицию — дождёмся появления даты.
+          if (idx < 0) return;
+          container.scrollLeft = Math.max(
+            0,
+            TIME_COLUMN_WIDTH + idx * COLUMN_WIDTH + COLUMN_WIDTH / 2 - container.clientWidth / 2
+          );
+          savedScrollRef.current = { left: container.scrollLeft, top: container.scrollTop };
+        }
+        const centerPx = container.scrollLeft + container.clientWidth / 2 - TIME_COLUMN_WIDTH;
+        let ci = Math.floor(centerPx / COLUMN_WIDTH);
+        if (ci < 0) ci = 0;
+        if (ci > weekDays.length - 1) ci = weekDays.length - 1;
+        setToolbarMonthKey(weekDays[ci]?.monthKey || '');
+      });
+      return () => cancelAnimationFrame(raf);
+    }, [activeAdminScreen, weekDays, selectedJournalDate]);
 
     const topBarMonthDate = parseLocalDate(
       toolbarMonthKey ? `${toolbarMonthKey}-01` : (selectedJournalDate || toLocalDateString(today))
@@ -2460,7 +2366,7 @@ const JournalMode: React.FC<{
     }, [filteredBookings, weekDays, services]);
 
     return (
-      <>
+      <div className="h-[100dvh] flex flex-col overflow-hidden">
         {/* Drawer overlay & menu */}
         {isDrawerOpen && (
           <>
@@ -2483,13 +2389,19 @@ const JournalMode: React.FC<{
                 <button onClick={() => handleNavClick('clients')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">👥 Клиенты</button>
                 <button onClick={() => handleNavClick('services')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">🛠 Услуги</button>
                 <button onClick={() => handleNavClick('settings')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">⚙️ Настройки</button>
+                <button
+                  onClick={() => { setIsDrawerOpen(false); onSignOut(); }}
+                  className="w-full p-4 border-b border-gray-100 text-left text-red-600 hover:bg-red-50 text-sm"
+                >
+                  🚪 Выйти
+                </button>
               </nav>
             </div>
           </>
         )}
 
         {/* Top Bar */}
-        <div className="bg-purple-800 text-white flex items-center justify-between p-3 shadow-md">
+        <div className="bg-purple-800 text-white flex items-center justify-between p-3 shadow-md shrink-0">
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsDrawerOpen(true)}
@@ -2527,8 +2439,9 @@ const JournalMode: React.FC<{
           </div>
         </div>
 
-        {activeAdminScreen === 'calendar' && (
-          <div className="pb-4 bg-gray-100 w-full overflow-x-hidden">
+        {/* Журнал всегда в DOM (скрыт классом hidden), чтобы браузер нативно
+            сохранял scrollLeft/scrollTop при переходе в другие экраны */}
+        <div className={`flex-1 min-h-0 flex flex-col overflow-hidden bg-gray-100 w-full ${activeAdminScreen === 'calendar' ? '' : 'hidden'}`}>
             <div className="max-w-md mx-auto px-2 sm:px-4 mb-3 flex gap-2">
               <button onClick={() => onFilterChange('all')} className={`px-3 py-1 rounded text-xs font-medium border ${filterBrand === 'all' ? 'bg-gray-900 text-white' : 'bg-white'}`}>Все посты</button>
               <button onClick={() => onFilterChange('bvk')} className={`px-3 py-1 rounded text-xs font-medium border ${filterBrand === 'bvk' ? 'bg-green-600 text-white' : 'bg-white'}`}>BVK Авто</button>
@@ -2545,7 +2458,7 @@ const JournalMode: React.FC<{
             <div
               ref={gridContainerRef}
               onScroll={handleGridScroll}
-              className="mx-1 sm:mx-4 overflow-x-auto overflow-y-auto h-[calc(100dvh-210px)] max-h-[calc(100dvh-210px)] relative"
+              className="mx-1 sm:mx-4 overflow-x-auto overflow-y-auto flex-1 min-h-0 relative"
             >
               <div className="bg-white rounded border border-gray-300 w-max">
                 <div
@@ -2707,8 +2620,7 @@ const JournalMode: React.FC<{
                 </div>
               </div>
             </div>
-          </div>
-        )}
+        </div>
         {activeAdminScreen === 'clients' && (
           <div className="pb-20 bg-gray-100 w-full min-h-[calc(100vh-120px)]">
             <div className="max-w-md mx-auto">
@@ -2915,13 +2827,13 @@ const JournalMode: React.FC<{
               </p>
 
               <img
-                src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=https://evgeniy261128.github.io/bvk-gbo-app/"
+                src="https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=https://bvk-autoservis.github.io/"
                 alt="QR-код записи"
                 className="w-48 h-48 mx-auto rounded-lg border border-gray-100 p-2 shadow-inner"
               />
 
               <div className="mt-4 bg-gray-100 rounded-lg px-3 py-2 text-xs text-gray-600 break-all">
-                evgeniy261128.github.io/bvk-gbo-app
+                bvk-autoservis.github.io
               </div>
 
               <button
@@ -2936,7 +2848,7 @@ const JournalMode: React.FC<{
             </div>
           </div>
         )}
-      </>
+      </div>
     );
   };
 // ===== Main App =====
@@ -2944,6 +2856,12 @@ const App: React.FC = () => {
   const [activeBrand, setActiveBrand] = useState<BrandType>('bvk');
   const [mode, setMode] = useState<AppMode>('client');
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [adminRequested, setAdminRequested] = useState(false);
+  const logoTapsRef = useRef<number[]>([]);
+  // Занятые слоты для анонимного клиента (RPC get_busy_slots)
+  const [publicBlockedMap, setPublicBlockedMap] = useState<Map<string, string>>(new Map());
 
   // Booking form state
   const [selectedServices, setSelectedServices] = useState<string[]>([]);
@@ -3017,15 +2935,30 @@ const App: React.FC = () => {
   const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
-    seedIfNeeded();
-    const loaded = loadBookings();
-    setBookings(loaded);
-    const loadedServices = loadServices();
-    setServices(loadedServices);
-    const loadedClients = loadClients();
-    setClients(loadedClients);
-    const loadedSchedule = loadScheduleSettings();
-    setScheduleSettings(loadedSchedule);
+    let cancelled = false;
+
+    // Услуги и расписание доступны анонимно (SELECT по RLS)
+    (async () => {
+      try {
+        const loadedServices = await fetchServices();
+        if (!cancelled) setServices(loadedServices);
+      } catch (e) {
+        console.error('Не удалось загрузить услуги из Supabase', e);
+      }
+      try {
+        const loadedSchedule = await fetchScheduleSettings();
+        if (!cancelled) setScheduleSettings(loadedSchedule);
+      } catch (e) {
+        console.error('Не удалось загрузить расписание из Supabase', e);
+      }
+    })();
+
+    // Скрытый вход в журнал: ?admin=1 или #admin
+    const adminInQuery = new URLSearchParams(window.location.search).get('admin') === '1';
+    const adminInHash = window.location.hash.replace(/^#/, '').toLowerCase() === 'admin';
+    if (adminInQuery || adminInHash) {
+      setAdminRequested(true);
+    }
 
     // Восстанавливаем запомненный профиль клиента и его собственные записи (PWA, без регистрации)
     const savedProfile = loadClientProfile();
@@ -3053,7 +2986,133 @@ const App: React.FC = () => {
     setIsStandalone(
       window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true
     );
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  // Сессия мастера (Supabase Auth) с постоянным сохранением
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (active) setSession(data.session);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      setSession(nextSession);
+      if (event === 'SIGNED_IN' && nextSession) {
+        setIsAuthModalOpen(false);
+        setMode('journal');
+        // Убираем скрытый вход из адресной строки после успешного входа
+        clearAdminUrl();
+      }
+      if (event === 'SIGNED_OUT') {
+        setMode('client');
+      }
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // ?admin=1: ждём восстановления сессии и открываем журнал либо форму входа
+  useEffect(() => {
+    if (!adminRequested) return;
+    if (session) {
+      setMode('journal');
+      clearAdminUrl();
+    } else {
+      setIsAuthModalOpen(true);
+    }
+    setAdminRequested(false);
+  }, [adminRequested, session]);
+
+  // Полные данные журнала доступны только авторизованному мастеру (RLS)
+  useEffect(() => {
+    if (!session) {
+      setBookings([]);
+      setClients([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [loadedBookings, loadedClients] = await Promise.all([fetchBookings(), fetchClients()]);
+        if (!cancelled) {
+          setBookings(loadedBookings);
+          setClients(loadedClients);
+        }
+        // Повторная загрузка услуг: пустую таблицу мастер заполняет стартовым каталогом
+        try {
+          const loadedServices = await fetchServices();
+          if (!cancelled) setServices(loadedServices);
+        } catch (e) {
+          console.error('Не удалось обновить услуги после входа', e);
+        }
+      } catch (e) {
+        console.error('Не удалось загрузить данные журнала из Supabase', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  // Занятые слоты для клиента — обезличенная RPC get_busy_slots
+  useEffect(() => {
+    if (mode === 'journal' || !selectedDate) {
+      setPublicBlockedMap(new Map());
+      return;
+    }
+    let cancelled = false;
+    fetchBusySlots(selectedDate)
+      .then(slots => {
+        if (!cancelled) setPublicBlockedMap(slots);
+      })
+      .catch(e => {
+        console.error('Не удалось получить занятые слоты', e);
+        if (!cancelled) setPublicBlockedMap(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, selectedDate]);
+
+  // Скрытый вход: 5 быстрых тапов по логотипу за 3 секунды
+  const handleLogoTap = () => {
+    const now = Date.now();
+    const taps = [...logoTapsRef.current, now].filter(t => now - t <= 3000);
+    logoTapsRef.current = taps;
+    if (taps.length < 5) return;
+    logoTapsRef.current = [];
+    if (session) {
+      setMode('journal');
+    } else {
+      setIsAuthModalOpen(true);
+    }
+  };
+
+  // Убирает ?admin=1 / #admin из URL, не перезагружая страницу
+  const clearAdminUrl = () => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('admin');
+      if (url.hash.replace(/^#/, '').toLowerCase() === 'admin') url.hash = '';
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // history API недоступен — молча пропускаем
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error('Не удалось выйти из аккаунта', e);
+    }
+    setMode('client');
+  };
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: any) => {
@@ -3094,12 +3153,6 @@ const App: React.FC = () => {
     }
   };
 
-  const todayStr = useMemo(() => toLocalDateString(new Date()), []);
-  const todayBookingsCount = useMemo(
-    () => bookings.filter(b => b.date === todayStr && b.status !== 'ready').length,
-    [bookings, todayStr]
-  );
-
   const handleServiceToggle = (id: string) => {
     const next = selectedServices.includes(id)
       ? selectedServices.filter(s => s !== id)
@@ -3112,7 +3165,7 @@ const App: React.FC = () => {
     setContactForm(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleBook = () => {
+  const handleBook = async () => {
     setValidationError(null);
     const phoneDigits = (contactForm.phone || '').replace(/\D/g, '');
     let missingField: string | null = null;
@@ -3141,7 +3194,7 @@ const App: React.FC = () => {
     const clientCarModel = (contactForm.carModel || '').trim();
 
     const newBooking: Booking = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       brand: activeBrand,
       services: selectedServices,
       serviceName,
@@ -3159,9 +3212,19 @@ const App: React.FC = () => {
       createdAt: new Date().toISOString(),
     };
 
-    const updated = [...bookings, newBooking];
-    setBookings(updated);
-    saveBookings(updated);
+    // Анонимный клиент пишет запись через INSERT (SELECT закрыт RLS), поэтому без .select()
+    try {
+      await createPublicBooking(newBooking);
+    } catch (e) {
+      console.error('Не удалось отправить заявку в Supabase', e);
+      setValidationError('Не удалось отправить заявку. Проверьте подключение и попробуйте ещё раз.');
+      return;
+    }
+
+    // Обновляем занятые слоты после успешной записи
+    fetchBusySlots(selectedDate)
+      .then(slots => setPublicBlockedMap(slots))
+      .catch(() => {});
 
     // Запоминаем профиль клиента, чтобы при повторном визите не вводить данные заново
     saveClientProfile({ name: clientName, phone: clientPhone, carMake: clientCarMake, carModel: clientCarModel });
@@ -3171,9 +3234,9 @@ const App: React.FC = () => {
     saveOwnBookings(ownNext);
     setOwnBookings(ownNext);
 
-    // Автоматически добавляем/обновляем клиента в базе Журнала мастера (по совпадению телефона)
+    // Автоматически добавляем/обновляем клиента в базе Журнала мастера (только для мастера)
     const phoneDigitsKey = clientPhone.replace(/\D/g, '');
-    if (phoneDigitsKey.length >= 10) {
+    if (session && phoneDigitsKey.length >= 10) {
       const existingClient = clients.find(c => (c.phone || '').replace(/\D/g, '') === phoneDigitsKey);
       if (existingClient) {
         handleSaveClient({
@@ -3205,19 +3268,13 @@ const App: React.FC = () => {
   };
 
   const handleCancelNearest = () => {
-    const ownIds = new Set(ownBookings.map(b => b.id));
-    const earliest = [...bookings]
-      .filter(b => !b.id.startsWith('demo') && ownIds.has(b.id))
+    const earliest = [...ownBookings]
       .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
-    if (earliest) {
-      const updated = bookings.filter(b => b.id !== earliest.id);
-      setBookings(updated);
-      saveBookings(updated);
+    if (!earliest) return;
 
-      const ownUpdated = loadOwnBookings().filter(b => b.id !== earliest.id);
-      saveOwnBookings(ownUpdated);
-      setOwnBookings(ownUpdated);
-    }
+    const ownUpdated = ownBookings.filter(b => b.id !== earliest.id);
+    saveOwnBookings(ownUpdated);
+    setOwnBookings(ownUpdated);
   };
 
   const handleNewBooking = () => {
@@ -3225,52 +3282,69 @@ const App: React.FC = () => {
     setCurrentBooking(null);
   };
 
-  const handleSaveManual = (booking: Booking) => {
-    const updated = [...bookings, booking];
-    setBookings(updated);
-    saveBookings(updated);
+  const handleSaveManual = async (booking: Booking) => {
     setIsManualOpen(false);
     setIsPersonalEventOpen(false);
-    if (mode === 'journal') {
-      setSelectedJournalDate(booking.date);
+    try {
+      const saved = await createBooking(booking);
+      setBookings(prev => [...prev, saved]);
+      if (mode === 'journal') {
+        setSelectedJournalDate(saved.date);
+      }
+    } catch (e) {
+      console.error('Не удалось сохранить запись в Supabase', e);
     }
   };
 
-  const handleUpdateBooking = (updated: Booking) => {
-    const newBookings = bookings.map(b => b.id === updated.id ? updated : b);
-    setBookings(newBookings);
-    saveBookings(newBookings);
-    // Also update details modal if open
-    if (detailsBooking?.id === updated.id) {
-      setDetailsBooking(updated);
+  const handleUpdateBooking = async (updated: Booking) => {
+    try {
+      const saved = await updateBookingRecord(updated);
+      setBookings(prev => prev.map(b => (b.id === saved.id ? saved : b)));
+      setDetailsBooking(prev => (prev && prev.id === saved.id ? saved : prev));
+    } catch (e) {
+      console.error('Не удалось обновить запись в Supabase', e);
     }
   };
 
-  const handleDeleteBooking = (id: string) => {
-    if (window.confirm('Удалить запись?')) {
-      const updated = bookings.filter(b => b.id !== id);
-      setBookings(updated);
-      saveBookings(updated);
+  const handleDeleteBooking = async (id: string) => {
+    if (!window.confirm('Удалить запись?')) return;
+    try {
+      await deleteBookingRecord(id);
+      setBookings(prev => prev.filter(b => b.id !== id));
+    } catch (e) {
+      console.error('Не удалось удалить запись из Supabase', e);
     }
   };
 
-  const handleUpdateServices = (updatedServices: Service[]) => {
+  const handleUpdateServices = async (updatedServices: Service[]) => {
     setServices(updatedServices);
-    saveServices(updatedServices);
+    try {
+      await syncServices(updatedServices);
+    } catch (e) {
+      console.error('Не удалось сохранить услуги в Supabase', e);
+    }
   };
 
-  const handleSaveClient = (c: Client) => {
-    const exists = clients.find(existing => existing.id === c.id);
-    const upd = exists ? clients.map(existing => existing.id === c.id ? c : existing) : [...clients, c];
-    setClients(upd);
-    saveClients(upd);
+  const handleSaveClient = async (c: Client) => {
+    // Справочник клиентов доступен только авторизованному мастеру
+    if (!session) return;
+    try {
+      const saved = await saveClientToDb(c);
+      setClients(prev => (prev.some(x => x.id === saved.id)
+        ? prev.map(x => (x.id === saved.id ? saved : x))
+        : [...prev, saved]));
+    } catch (e) {
+      console.error('Не удалось сохранить клиента в Supabase', e);
+    }
   };
 
-  const handleDeleteClient = (id: string) => {
-    if (window.confirm('Удалить клиента из базы?')) {
-      const upd = clients.filter(c => c.id !== id);
-      setClients(upd);
-      saveClients(upd);
+  const handleDeleteClient = async (id: string) => {
+    if (!window.confirm('Удалить клиента из базы?')) return;
+    try {
+      await deleteClientFromDb(id);
+      setClients(prev => prev.filter(c => c.id !== id));
+    } catch (e) {
+      console.error('Не удалось удалить клиента из Supabase', e);
     }
   };
 
@@ -3351,9 +3425,10 @@ const App: React.FC = () => {
     setValidationError(null);
   };
 
+  // Клиент видит только обезличенные слоты из RPC, мастер — по полным данным
   const blockedMap = useMemo(
-    () => getBlockedHoursMap(bookings, selectedDate, services),
-    [bookings, selectedDate, services]
+    () => (mode === 'journal' ? getBlockedHoursMap(bookings, selectedDate, services) : publicBlockedMap),
+    [mode, bookings, selectedDate, services, publicBlockedMap]
   );
 
   const workingHours = useMemo(
@@ -3361,40 +3436,32 @@ const App: React.FC = () => {
     [scheduleSettings.startTime, scheduleSettings.endTime]
   );
 
-  const handleUpdateSchedule = (settings: ScheduleSettings) => {
+  const handleUpdateSchedule = async (settings: ScheduleSettings) => {
     setScheduleSettings(settings);
-    saveScheduleSettings(settings);
+    try {
+      await updateScheduleSettings(settings);
+    } catch (e) {
+      console.error('Не удалось сохранить расписание в Supabase', e);
+    }
   };
 
   const nearestUserBooking = useMemo(() => {
-    const ownIds = new Set(ownBookings.map(b => b.id));
-    const userBookings = bookings.filter(b => ownIds.has(b.id));
-    if (userBookings.length === 0) return null;
-    return [...userBookings].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
-  }, [bookings, ownBookings]);
+    if (ownBookings.length === 0) return null;
+    return [...ownBookings].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))[0];
+  }, [ownBookings]);
 
-  const canBook = selectedDate && selectedTime && selectedServices.length > 0 && contactForm.name && contactForm.phone;
+  const canBook = !!(selectedDate && selectedTime && selectedServices.length > 0 && contactForm.name && contactForm.phone);
 
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 font-sans">
       <div className="w-full bg-gray-100 min-h-screen">
-        <Header
-          activeBrand={activeBrand}
-          onBrandChange={setActiveBrand}
-          mode={mode}
-          onModeChange={setMode}
-          todayBookingsCount={todayBookingsCount}
-        />
-
-        {(!isStandalone && (isMobile || deferredPrompt)) && (
-          <div className="px-4 pb-4">
-            <button
-              onClick={handleInstallClick}
-              className="w-full bg-purple-600 hover:bg-purple-700 text-white py-3 rounded text-sm font-medium shadow flex items-center justify-center gap-2 transition-colors"
-            >
-              📱 Установить приложение на телефон
-            </button>
-          </div>
+        {/* В режиме мастера клиентская шапка не рендерится: панель журнала идёт от верхнего края */}
+        {mode !== 'journal' && (
+          <Header
+            activeBrand={activeBrand}
+            onBrandChange={setActiveBrand}
+            onLogoTap={handleLogoTap}
+          />
         )}
 
         {showInstallHelp && (
@@ -3405,7 +3472,7 @@ const App: React.FC = () => {
           />
         )}
 
-        <main className="pb-20">
+        <main className={mode === 'journal' ? '' : 'pb-20'}>
           {mode === 'journal' ? (
             <JournalMode
               bookings={bookings}
@@ -3425,6 +3492,7 @@ const App: React.FC = () => {
               clients={clients}
               onSaveClient={handleSaveClient}
               onDeleteClient={handleDeleteClient}
+              onSignOut={handleSignOut}
             />
           ) : isSubmitted && currentBooking ? (
             <Confirmation booking={currentBooking} onNew={handleNewBooking} />
@@ -3479,6 +3547,11 @@ const App: React.FC = () => {
             </div>
           )}
         </main>
+
+        <AuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => setIsAuthModalOpen(false)}
+        />
 
         <ManualAddModal
           isOpen={isManualOpen}
