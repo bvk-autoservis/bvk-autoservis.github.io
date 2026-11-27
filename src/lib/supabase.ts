@@ -100,22 +100,45 @@ export async function fetchServices(): Promise<Service[]> {
   return INITIAL_SERVICES;
 }
 
-/** Полная синхронизация каталога (мастер): upsert всех услуг + удаление отсутствующих. */
-export async function syncServices(services: Service[]): Promise<void> {
-  const rows = services.map((service, index) => serviceToRow(service, index + 1));
-  if (rows.length > 0) {
-    const { error } = await supabase.from('services').upsert(rows, { onConflict: 'id' });
-    if (error) throw error;
+/**
+ * Создание или изменение одной услуги (мастер).
+ * Возвращает реальную строку из БД (`.select().single()`), а не локальную копию.
+ * sort_order создаётся/берётся из БД, is_active всегда true — иначе политика
+ * services_read (using is_active) скрывает услугу и у клиента, и у мастера.
+ */
+export async function saveService(service: Service): Promise<Service> {
+  const { data: current, error: currentError } = await supabase
+    .from('services')
+    .select('sort_order')
+    .eq('id', service.id)
+    .maybeSingle();
+  if (currentError) throw currentError;
+
+  let sortOrder = current?.sort_order;
+  if (typeof sortOrder !== 'number') {
+    const { data: last, error: lastError } = await supabase
+      .from('services')
+      .select('sort_order')
+      .order('sort_order', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastError) throw lastError;
+    sortOrder = (typeof last?.sort_order === 'number' ? last.sort_order : 0) + 1;
   }
 
-  const { data, error } = await supabase.from('services').select('id');
+  const { data, error } = await supabase
+    .from('services')
+    .upsert(serviceToRow(service, sortOrder), { onConflict: 'id' })
+    .select()
+    .single();
   if (error) throw error;
-  const keep = new Set(services.map(service => service.id));
-  const removed = (data ?? []).map((row: { id: string }) => row.id).filter((id: string) => !keep.has(id));
-  if (removed.length > 0) {
-    const { error: deleteError } = await supabase.from('services').delete().in('id', removed);
-    if (deleteError) throw deleteError;
-  }
+  return serviceFromRow(data);
+}
+
+/** Удаление одной услуги (мастер) — без полной перезаписи каталога. */
+export async function deleteService(id: string): Promise<void> {
+  const { error } = await supabase.from('services').delete().eq('id', id);
+  if (error) throw error;
 }
 
 // ===== Schedule settings (синглтон id = 1) =====

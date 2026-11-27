@@ -8,13 +8,15 @@ import {
 import { Car } from 'lucide-react';
 import {
   supabase, DEFAULT_SCHEDULE,
-  fetchServices, syncServices,
+  fetchServices,
+  saveService as saveServiceToDb, deleteService as deleteServiceFromDb,
   fetchScheduleSettings, updateScheduleSettings,
   fetchClients, saveClient as saveClientToDb, deleteClient as deleteClientFromDb,
   fetchBookings, createBooking, createPublicBooking, updateBookingRecord, deleteBookingRecord,
   fetchBusySlots,
 } from './lib/supabase';
 import AuthModal from './components/AuthModal';
+import { bookingFromRow } from './lib/mappers';
 
 
 // ===== Date helpers (timezone-safe) =====
@@ -1592,7 +1594,7 @@ const BookingDetailsModal: React.FC<{
 interface ServiceModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (service: Service) => void;
+  onSave: (service: Service) => Promise<void> | void;
   onDelete: (id: string) => void;
   service: Service | null;
   services: Service[];
@@ -1624,19 +1626,24 @@ const ServiceModal: React.FC<ServiceModalProps> = ({ isOpen, onClose, onSave, on
 
   if (!isOpen) return null;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name || !priceInput) return;
     const duration = parseInt(durationStr) || 0;
     const priceStr = String(parseInt(priceInput) || 0);
     const newService: Service = {
-      id: service ? service.id : Date.now().toString(),
+      id: service ? service.id : `svc-${Date.now()}`,
       name,
       price: priceFrom ? `от ${priceStr} ₽` : `${priceStr} ₽`,
       duration,
       brand,
     };
-    onSave(newService);
-    onClose();
+    try {
+      // Ждём реального ответа Supabase: при ошибке форма остаётся открытой
+      await onSave(newService);
+      onClose();
+    } catch {
+      // Ошибка уже залогирована вызывающей стороной
+    }
   };
 
   const handleDelete = () => {
@@ -2048,7 +2055,8 @@ const JournalMode: React.FC<{
   onUpdateBooking: (booking: Booking) => void;
   onDeleteBooking: (id: string) => void;
   services: Service[];
-  onUpdateServices: (services: Service[]) => void;
+  onSaveService: (service: Service) => Promise<Service | null>;
+  onDeleteService: (id: string) => Promise<void>;
   scheduleSettings: ScheduleSettings;
   onUpdateSchedule: (settings: ScheduleSettings) => void;
   clients: Client[];
@@ -2058,8 +2066,9 @@ const JournalMode: React.FC<{
   onSignOut: () => void;
 }> = ({
   bookings, onAddManual, onCellAction, onDetailsOpen, selectedJournalDate, onJournalDateChange,
-  filterBrand, onFilterChange, onUpdateBooking, onDeleteBooking, services, onUpdateServices,
+  filterBrand, onFilterChange, onUpdateBooking, onDeleteBooking, services,
   scheduleSettings, onUpdateSchedule, clients, onSaveClient, onDeleteClient, onClientMode, onSignOut,
+  onSaveService, onDeleteService,
 }) => {
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
     const [activeAdminScreen, setActiveAdminScreen] = useState<'calendar' | 'clients' | 'services' | 'settings'>('calendar');
@@ -2309,15 +2318,15 @@ const JournalMode: React.FC<{
       setIsDrawerOpen(false);
     };
 
-    const handleSaveService = (updated: Service) => {
-      const newServices = services.find(s => s.id === updated.id)
-        ? services.map(s => s.id === updated.id ? updated : s)
-        : [...services, updated];
-      onUpdateServices(newServices);
+    const handleSaveService = async (updated: Service) => {
+      const saved = await onSaveService(updated);
+      if (!saved) throw new Error('Услуга не сохранена');
+      // Сразу показываем услугу: фильтр переключаем на её бренд
+      setServiceFilterBrand(saved.brand);
     };
 
-    const handleDeleteService = (id: string) => {
-      onUpdateServices(services.filter(s => s.id !== id));
+    const handleDeleteService = async (id: string) => {
+      await onDeleteService(id);
     };
 
     const openServiceModal = (service: Service | null) => {
@@ -3138,6 +3147,35 @@ const App: React.FC = () => {
     };
   }, [session]);
 
+  // Realtime: новые заявки с сайта и изменения появляются в журнале без F5
+  useEffect(() => {
+    if (!session) return;
+    const channel = supabase
+      .channel('bookings-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'bookings' },
+        (payload: any) => {
+          if (payload.eventType === 'DELETE') {
+            const removedId = payload.old?.id;
+            if (!removedId) return;
+            setBookings(prev => prev.filter(b => b.id !== String(removedId)));
+            return;
+          }
+          if (!payload.new || payload.new.id == null) return;
+          const incoming = bookingFromRow(payload.new);
+          // Обновляем по id без дубликатов, новые записи добавляем в конец
+          setBookings(prev => (prev.some(b => b.id === incoming.id)
+            ? prev.map(b => (b.id === incoming.id ? incoming : b))
+            : [...prev, incoming]));
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session]);
+
   // Занятые слоты для клиента — обезличенная RPC get_busy_slots
   useEffect(() => {
     if (mode === 'journal' || !selectedDate) {
@@ -3418,12 +3456,28 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateServices = async (updatedServices: Service[]) => {
-    setServices(updatedServices);
+  const handleSaveService = async (service: Service): Promise<Service | null> => {
+    // Услуги меняет только мастер (RLS services_write)
+    if (!session) return null;
     try {
-      await syncServices(updatedServices);
+      const saved = await saveServiceToDb(service);
+      // В state кладём строку, которую вернул Supabase, а не локальную копию
+      setServices(prev => (prev.some(s => s.id === saved.id)
+        ? prev.map(s => (s.id === saved.id ? saved : s))
+        : [...prev, saved]));
+      return saved;
     } catch (e) {
-      console.error('Не удалось сохранить услуги в Supabase', e);
+      console.error('Не удалось сохранить услугу в Supabase', e);
+      return null;
+    }
+  };
+
+  const handleDeleteService = async (id: string) => {
+    try {
+      await deleteServiceFromDb(id);
+      setServices(prev => prev.filter(s => s.id !== id));
+    } catch (e) {
+      console.error('Не удалось удалить услугу из Supabase', e);
     }
   };
 
@@ -3588,7 +3642,8 @@ const App: React.FC = () => {
               onUpdateBooking={handleUpdateBooking}
               onDeleteBooking={handleDeleteBooking}
               services={services}
-              onUpdateServices={handleUpdateServices}
+              onSaveService={handleSaveService}
+              onDeleteService={handleDeleteService}
               scheduleSettings={scheduleSettings}
               onUpdateSchedule={handleUpdateSchedule}
               clients={clients}
