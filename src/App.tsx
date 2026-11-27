@@ -2638,7 +2638,7 @@ const JournalMode: React.FC<{
             </div>
         </div>
         {activeAdminScreen === 'clients' && (
-          <div className="pb-20 bg-gray-100 w-full min-h-[calc(100vh-120px)]">
+          <div className="flex-1 min-h-0 overflow-y-auto pb-20 bg-gray-100 w-full">
             <div className="max-w-md mx-auto">
               <div className="bg-white rounded-none sm:rounded border-b sm:border border-gray-300 overflow-hidden">
                 {sortedClients.map(c => (
@@ -2673,7 +2673,7 @@ const JournalMode: React.FC<{
           </div>
         )}
         {activeAdminScreen === 'services' && (
-          <div className="pb-20 bg-gray-100 w-full min-h-[calc(100vh-120px)]">
+          <div className="flex-1 min-h-0 overflow-y-auto pb-20 bg-gray-100 w-full">
             <div className="max-w-md mx-auto px-2 sm:px-4 py-3">
               {/* Brand filter tabs */}
               <div className="flex gap-2 mb-3">
@@ -2728,7 +2728,7 @@ const JournalMode: React.FC<{
           </div>
         )}
         {activeAdminScreen === 'settings' && (
-          <div className="pb-20 bg-gray-100 w-full min-h-[calc(100vh-120px)]">
+          <div className="flex-1 min-h-0 overflow-y-auto pb-20 bg-gray-100 w-full">
             <div className="max-w-md mx-auto px-2 sm:px-4 py-4">
               <div className="bg-white rounded shadow border border-gray-300 p-4 mb-4">
                 <h2 className="text-xl font-bold text-gray-900 mb-4">Расписание</h2>
