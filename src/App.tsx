@@ -2054,11 +2054,12 @@ const JournalMode: React.FC<{
   clients: Client[];
   onSaveClient: (c: Client) => void;
   onDeleteClient: (id: string) => void;
+  onClientMode: () => void;
   onSignOut: () => void;
 }> = ({
   bookings, onAddManual, onCellAction, onDetailsOpen, selectedJournalDate, onJournalDateChange,
   filterBrand, onFilterChange, onUpdateBooking, onDeleteBooking, services, onUpdateServices,
-  scheduleSettings, onUpdateSchedule, clients, onSaveClient, onDeleteClient, onSignOut,
+  scheduleSettings, onUpdateSchedule, clients, onSaveClient, onDeleteClient, onClientMode, onSignOut,
 }) => {
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
     const [activeAdminScreen, setActiveAdminScreen] = useState<'calendar' | 'clients' | 'services' | 'settings'>('calendar');
@@ -2389,6 +2390,12 @@ const JournalMode: React.FC<{
                 <button onClick={() => handleNavClick('clients')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">👥 Клиенты</button>
                 <button onClick={() => handleNavClick('services')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">🛠 Услуги</button>
                 <button onClick={() => handleNavClick('settings')} className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm">⚙️ Настройки</button>
+                <button
+                  onClick={() => { setIsDrawerOpen(false); onClientMode(); }}
+                  className="w-full p-4 border-b border-gray-100 text-left text-gray-700 hover:bg-gray-50 text-sm"
+                >
+                  📱 Экран клиента
+                </button>
                 <button
                   onClick={() => { setIsDrawerOpen(false); onSignOut(); }}
                   className="w-full p-4 border-b border-gray-100 text-left text-red-600 hover:bg-red-50 text-sm"
@@ -2851,6 +2858,50 @@ const JournalMode: React.FC<{
       </div>
     );
   };
+// Флаг режима мастера: только на текущую вкладку (sessionStorage),
+// поэтому чистая ссылка "/" без параметров всегда открывает экран клиента
+const MASTER_MODE_KEY = 'bvk_master_mode';
+
+const isMasterModeSaved = () => {
+  try {
+    return sessionStorage.getItem(MASTER_MODE_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+
+const setMasterModeSaved = (enabled: boolean) => {
+  try {
+    if (enabled) sessionStorage.setItem(MASTER_MODE_KEY, '1');
+    else sessionStorage.removeItem(MASTER_MODE_KEY);
+  } catch {
+    // sessionStorage недоступен — просто работаем без сохранения режима
+  }
+};
+
+// Скрытый вход ?admin=1 или #admin
+const hasAdminUrl = () =>
+  new URLSearchParams(window.location.search).get('admin') === '1' ||
+  window.location.hash.replace(/^#/, '').toLowerCase() === 'admin';
+
+// Закрепляет режим журнала в адресе: F5 и ярлык на экране «Домой» откроют журнал
+const setAdminHash = () => {
+  try {
+    window.history.replaceState(null, '', '#admin');
+  } catch {
+    // history API недоступен — молча пропускаем
+  }
+};
+
+// Убирает #admin из адреса, возвращая чистую клиентскую ссылку
+const removeAdminHash = () => {
+  try {
+    window.history.replaceState(null, '', window.location.pathname);
+  } catch {
+    // history API недоступен — молча пропускаем
+  }
+};
+
 // ===== Main App =====
 const App: React.FC = () => {
   const [activeBrand, setActiveBrand] = useState<BrandType>('bvk');
@@ -2860,6 +2911,15 @@ const App: React.FC = () => {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [adminRequested, setAdminRequested] = useState(false);
   const logoTapsRef = useRef<number[]>([]);
+  // Сессия уже проверена Supabase Auth (форма входа не должна мигать раньше времени)
+  const [isSessionReady, setIsSessionReady] = useState(false);
+
+  // Открывает журнал мастера и запоминает режим до следующей загрузки страницы
+  const openJournal = () => {
+    setMasterModeSaved(true);
+    setAdminHash();
+    setMode('journal');
+  };
   // Занятые слоты для анонимного клиента (RPC get_busy_slots)
   const [publicBlockedMap, setPublicBlockedMap] = useState<Map<string, string>>(new Map());
 
@@ -2995,18 +3055,36 @@ const App: React.FC = () => {
   // Сессия мастера (Supabase Auth) с постоянным сохранением
   useEffect(() => {
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (active) setSession(data.session);
-    });
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        if (!active) return;
+        setSession(data.session);
+        setIsSessionReady(true);
+        // После F5: сессия жива и режим мастера запоминался (или открыт ?admin=1 / #admin)
+        if (data.session && (isMasterModeSaved() || hasAdminUrl())) {
+          // Восстанавливаем журнал и заново закрепляем #admin, чтобы режим пережил F5
+          openJournal();
+          setIsAuthModalOpen(false);
+          clearAdminUrl();
+        }
+      })
+      .catch(() => {
+        if (active) setIsSessionReady(true);
+      });
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession);
+      setIsSessionReady(true);
       if (event === 'SIGNED_IN' && nextSession) {
         setIsAuthModalOpen(false);
-        setMode('journal');
+        // Запоминаем режим мастера, чтобы после обновления страницы журнал открылся сразу
+        openJournal();
         // Убираем скрытый вход из адресной строки после успешного входа
         clearAdminUrl();
       }
       if (event === 'SIGNED_OUT') {
+        setMasterModeSaved(false);
+        removeAdminHash();
+        setIsAuthModalOpen(false);
         setMode('client');
       }
     });
@@ -3018,15 +3096,16 @@ const App: React.FC = () => {
 
   // ?admin=1: ждём восстановления сессии и открываем журнал либо форму входа
   useEffect(() => {
-    if (!adminRequested) return;
+    // Ждём результата getSession(), иначе форма входа мелькнёт поверх активной сессии
+    if (!adminRequested || !isSessionReady) return;
     if (session) {
-      setMode('journal');
+      openJournal();
       clearAdminUrl();
     } else {
       setIsAuthModalOpen(true);
     }
     setAdminRequested(false);
-  }, [adminRequested, session]);
+  }, [adminRequested, session, isSessionReady]);
 
   // Полные данные журнала доступны только авторизованному мастеру (RLS)
   useEffect(() => {
@@ -3080,29 +3159,47 @@ const App: React.FC = () => {
   }, [mode, selectedDate]);
 
   // Скрытый вход: 5 быстрых тапов по логотипу за 3 секунды
-  const handleLogoTap = () => {
+  const handleLogoTap = async () => {
     const now = Date.now();
     const taps = [...logoTapsRef.current, now].filter(t => now - t <= 3000);
     logoTapsRef.current = taps;
     if (taps.length < 5) return;
     logoTapsRef.current = [];
-    if (session) {
-      setMode('journal');
+    // Сначала проверяем активную сессию: мастеру не нужно вводить пароль заново
+    let currentSession = session;
+    if (!currentSession) {
+      try {
+        const { data } = await supabase.auth.getSession();
+        currentSession = data.session ?? null;
+        if (currentSession) setSession(currentSession);
+      } catch {
+        currentSession = null;
+      }
+    }
+    if (currentSession) {
+      openJournal();
     } else {
       setIsAuthModalOpen(true);
     }
   };
 
-  // Убирает ?admin=1 / #admin из URL, не перезагружая страницу
+  // Убирает скрытый вход ?admin=1 из URL, оставляя #admin для восстановления после F5
   const clearAdminUrl = () => {
     try {
       const url = new URL(window.location.href);
+      if (!url.searchParams.has('admin')) return;
       url.searchParams.delete('admin');
-      if (url.hash.replace(/^#/, '').toLowerCase() === 'admin') url.hash = '';
       window.history.replaceState({}, '', url.toString());
     } catch {
       // history API недоступен — молча пропускаем
     }
+  };
+
+  // Возврат к экрану клиента без выхода из аккаунта: сессия остаётся живой
+  const handleSwitchToClient = () => {
+    setMasterModeSaved(false);
+    removeAdminHash();
+    setMode('client');
   };
 
   const handleSignOut = async () => {
@@ -3111,6 +3208,11 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Не удалось выйти из аккаунта', e);
     }
+    // Полный сброс: забываем сессию, режим мастера и возвращаемся к клиентскому экрану
+    setMasterModeSaved(false);
+    removeAdminHash();
+    setSession(null);
+    setIsAuthModalOpen(false);
     setMode('client');
   };
 
@@ -3492,6 +3594,7 @@ const App: React.FC = () => {
               clients={clients}
               onSaveClient={handleSaveClient}
               onDeleteClient={handleDeleteClient}
+              onClientMode={handleSwitchToClient}
               onSignOut={handleSignOut}
             />
           ) : isSubmitted && currentBooking ? (
