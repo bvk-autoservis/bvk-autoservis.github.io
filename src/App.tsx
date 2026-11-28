@@ -16,6 +16,7 @@ import {
   fetchBusySlots,
 } from './lib/supabase';
 import AuthModal from './components/AuthModal';
+import PwaInstallBanner from './components/PwaInstallBanner';
 import { bookingFromRow } from './lib/mappers';
 
 
@@ -3260,6 +3261,9 @@ const App: React.FC = () => {
       setDeferredPrompt(e);
     };
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    // Событие могло прийти до монтирования React (перехвачено в main.tsx)
+    const earlyPrompt = (window as any).__deferredPrompt;
+    if (earlyPrompt) setDeferredPrompt(earlyPrompt);
     return () => window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
   }, []);
 
@@ -3617,6 +3621,14 @@ const App: React.FC = () => {
             activeBrand={activeBrand}
             onBrandChange={setActiveBrand}
             onLogoTap={handleLogoTap}
+          />
+        )}
+
+        {mode !== 'journal' && (
+          <PwaInstallBanner
+            deferredPrompt={deferredPrompt}
+            onInstalled={() => setDeferredPrompt(null)}
+            onManualInstall={() => setShowInstallHelp(true)}
           />
         )}
 
