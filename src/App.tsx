@@ -3696,6 +3696,19 @@ const App: React.FC = () => {
           )}
         </main>
 
+        {/* Быстрый возврат в журнал: только для авторизованного мастера, анониму не рендерим вовсе */}
+        {mode === 'client' && Boolean(session) && (
+          <button
+            type="button"
+            onClick={openJournal}
+            aria-label="Вернуться в журнал мастера"
+            className="fixed bottom-24 right-4 z-40 inline-flex items-center gap-2 rounded-full bg-purple-800 px-4 py-3 text-sm font-medium text-white shadow-lg shadow-purple-900/30 transition hover:bg-purple-700 active:scale-95"
+          >
+            <span aria-hidden="true">📋</span>
+            Вернуться в журнал
+          </button>
+        )}
+
         <AuthModal
           isOpen={isAuthModalOpen}
           onClose={() => setIsAuthModalOpen(false)}
