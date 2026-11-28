@@ -802,6 +802,12 @@ const InstallGuideModal: React.FC<{
     return 'chrome';
   }, []);
 
+  // Открытие текущей страницы в Chrome напрямую из мессенджера/встроенного браузера
+  const chromeIntentUrl = useMemo(() => {
+    const host = typeof window !== 'undefined' ? window.location.host : 'bvk-autoservis.github.io';
+    return `intent://${host}/#Intent;scheme=https;package=com.android.chrome;end`;
+  }, []);
+
   const handleCopyLink = async () => {
     const url = window.location.origin + window.location.pathname + '?install=qr';
     try {
@@ -926,99 +932,71 @@ const InstallGuideModal: React.FC<{
                 </div>
               )}
 
-              {/* BLOCK B: opened inside a messenger / custom tab */}
+              {/* BLOCK B: нативного промпта нет (Telegram/ВК/встроенный браузер) — сразу в Chrome */}
               {!deferredPrompt && (
-                <div className="rounded-lg border-2 border-orange-400 bg-orange-50 p-3 space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="font-bold text-orange-900 text-sm">
-                      ⚠️ Шаг 1. Перейдите из мессенджера в браузер
-                    </p>
-                    <span className="text-2xl leading-none text-orange-600">↗</span>
-                  </div>
-                  <p className="text-xs text-orange-900 whitespace-pre-line">
-                    Если вы открыли ссылку из Telegram, WhatsApp или VK (вверху слева есть крестик{' '}
-                    <strong>✕</strong>):{'\n'}
-                    Нажмите на <strong>⋮ (три точки в самом правом верхнем углу экрана ↗)</strong> и выберите{' '}
-                    <strong>„Открыть в браузере“</strong> (или „Открыть в интернет-браузере“).
-                  </p>
-                  <button
-                    onClick={handleCopyLink}
-                    className="w-full bg-orange-500 hover:bg-orange-600 text-white py-2.5 px-4 rounded font-semibold text-sm shadow transition"
+                <div className="space-y-1.5">
+                  <a
+                    href={chromeIntentUrl}
+                    className="block w-full rounded bg-green-600 px-4 py-3 text-center text-base font-bold text-white shadow transition hover:bg-green-700"
                   >
-                    {copied ? '✅ Ссылка скопирована! Вставьте её в браузер' : '📋 Или скопировать ссылку для браузера'}
-                  </button>
+                    🚀 Открыть в Chrome и установить в 1 клик
+                  </a>
+                  <p className="text-center text-[11px] text-gray-500">
+                    Откроется Chrome — там сразу появится кнопка «Установить приложение».
+                  </p>
                 </div>
               )}
 
-              {/* BLOCK C: universal instructions for all Android browsers */}
-              <div className="space-y-2">
-                <p className="font-bold text-gray-800 text-sm">Шаг 2. Как установить в вашем браузере:</p>
-                {androidCards.map((card) => {
-                  const isActive = card.key === browser;
-                  return (
-                    <div
-                      key={card.key}
-                      className={`rounded-lg border p-2.5 transition ${isActive
-                        ? 'border-purple-500 bg-purple-50 shadow-sm'
-                        : 'border-gray-200 bg-white'
-                        }`}
-                    >
-                      <p className={`text-xs font-bold mb-1 ${isActive ? 'text-purple-800' : 'text-gray-700'}`}>
-                        {card.icon} {card.title}
-                        {isActive && <span className="ml-1 text-purple-600">← ваш браузер</span>}
-                      </p>
-                      <p className="text-xs text-gray-600">{card.text}</p>
-                    </div>
-                  );
-                })}
-              </div>
+              {/* BLOCK C: одна короткая подсказка только для текущего браузера */}
+              {(() => {
+                const tip = androidCards.find(c => c.key === browser) || androidCards[0];
+                return (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+                    <p className="mb-1 text-xs font-bold text-gray-800">
+                      {tip.icon} {tip.title} — нажмите «Установить приложение»
+                    </p>
+                    <p className="text-xs text-gray-600">{tip.text}</p>
+                  </div>
+                );
+              })()}
+
+              <button
+                onClick={handleCopyLink}
+                className="w-full rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-600 transition hover:bg-gray-50"
+              >
+                {copied ? '✅ Ссылка скопирована' : '📋 Скопировать ссылку'}
+              </button>
             </>
           )}
 
           {activeTab === 'ios' && (
             <>
-              <div className="rounded-lg border-2 border-orange-400 bg-orange-50 p-3 space-y-1.5">
-                <p className="font-bold text-orange-900 text-sm">Шаг 1. Откройте ссылку в Safari</p>
-                <p className="text-xs text-orange-900">
-                  Если ссылка открыта внутри Telegram или WhatsApp — нажмите значок <strong>компаса 🧭</strong>{' '}
-                  (или <strong>⋯</strong> в правом углу) и выберите <strong>«Открыть в Safari»</strong>.
-                </p>
+              <div className="flex items-start gap-2.5 rounded-lg border border-purple-100 bg-purple-50 p-3">
+                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">
+                  1
+                </span>
+                <span className="text-xs">
+                  В <strong>Safari</strong> нажмите <strong>«Поделиться»</strong> (квадрат со стрелкой вверх{' '}
+                  <strong>[↑]</strong>) в нижней панели.
+                </span>
               </div>
-
-              <div className="space-y-2">
-                <p className="font-bold text-gray-800 text-sm">Шаг 2. Как установить в Safari:</p>
-                <div className="flex items-start gap-2.5 bg-purple-50 p-2.5 rounded border border-purple-100">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs">
-                    1
-                  </span>
-                  <span className="text-xs">
-                    В нижней панели <strong>Safari</strong> нажмите кнопку <strong>«Поделиться»</strong>{' '}
-                    (квадрат со стрелкой вверх <strong>[↑]</strong>).
-                  </span>
-                </div>
-                <div className="flex items-start gap-2.5 bg-purple-50 p-2.5 rounded border border-purple-100">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs">
-                    2
-                  </span>
-                  <span className="text-xs">
-                    Прокрутите список вниз и выберите <strong>«На экран Домой»</strong> (значок <strong>➕</strong>).
-                  </span>
-                </div>
-                <div className="flex items-start gap-2.5 bg-purple-50 p-2.5 rounded border border-purple-100">
-                  <span className="flex-shrink-0 w-5 h-5 rounded-full bg-purple-600 text-white flex items-center justify-center font-bold text-xs">
-                    3
-                  </span>
-                  <span className="text-xs">
-                    Нажмите <strong>«Добавить»</strong> в правом верхнем углу.
-                  </span>
-                </div>
+              <div className="flex items-start gap-2.5 rounded-lg border border-purple-100 bg-purple-50 p-3">
+                <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-purple-600 text-xs font-bold text-white">
+                  2
+                </span>
+                <span className="text-xs">
+                  Выберите <strong>«На экран Домой»</strong> → <strong>«Добавить»</strong>. Готово!
+                </span>
               </div>
-
+              <p className="text-[11px] text-gray-500">
+                Открыто в Telegram/WhatsApp? Нажмите <strong>⋯</strong> справа вверху →{' '}
+                <strong>«Открыть в Safari»</strong>.
+              </p>
               <button
                 onClick={handleCopyLink}
-                className="w-full bg-purple-600 hover:bg-purple-700 text-white py-2.5 px-4 rounded font-semibold text-sm shadow transition"
+                className="w-full rounded border border-gray-300 px-3 py-1.5 text-xs text-gray-600 transition hover:bg-gray-50"
               >
-                {copied ? '✅ Ссылка скопирована! Вставьте её в Safari' : '📋 Скопировать ссылку для Safari'}
+                {copied ? '✅ Ссылка скопирована' : '📋 Скопировать ссылку'}
               </button>
             </>
           )}
